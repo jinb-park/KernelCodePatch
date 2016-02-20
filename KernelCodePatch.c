@@ -67,13 +67,65 @@ void SectionUpdate(unsigned long addr, pmdval_t mask, pmdval_t prot) {
 		pmd[0] = __pmd((pmd_val(pmd[0]) & mask) | prot);
 
 	flush_pmd_entry(pmd);
-	local_flush_tlb_kernel_range(addr, addr + SECTION_SIZE);
+	flush_tlb_all();
+	//local_flush_tlb_kernel_range(addr, addr + SECTION_SIZE);
 }
 
 void SetSectionPerms(SectionPerm *sp, pmdval_t prot) {
 	unsigned int i;
 	unsigned long addr;
+
+	if( sp->start == 0 || sp->end == 0) {
+		printk("[KCP] SectionPerm address is NULL\n");
+		return;
+	}
+
+	for(addr = sp->start; addr < sp->end; addr += SECTION_SIZE) {
+		SectionUpdate(addr, sp->mask, prot);
+	}
+	printk("[KCP] SetSectionPerms end\n");
+}
+void GetSectionPerms(SectionPerm *sp) {
+	unsigned int i, pmdIdx;
+	unsigned long addr;
+	struct mm_struct *mm;
+	pmdval_t pmdVal;
+	pmd_t *pmd;
+
+	if( sp->start == 0 || sp->end == 0) {
+		printk("[KCP] SectionPerm address is NULL\n");
+		return;
+	}
+
+	mm = current->active_mm;
+	pmd = pmd_offset(pud_offset(pgd_offset(mm, addr), addr), addr);
+
+	for(addr = sp->start; addr < sp->end; addr += SECTION_SIZE) {
+		if (addr & SECTION_SIZE)
+			pmdIdx = 1;
+		else
+			pmdIdx = 0;
+
+		pmdVal = pmd_val(pmd[pmdIdx]);
+		printk( "Addr : [%08x], PMD Val : [%08x], APX : [%d], AP(r) : [%d], AP(w) : [%d]\n", 
+					addr, pmdVal, 
+					!!(pmdVal & PMD_SECT_APX), 
+					!!(pmdVal & PMD_SECT_AP_READ),
+					!!(pmdVal & PMD_SECT_AP_WRITE) );
+	}
+	printk("[KCP] GetSectionPerms end\n");
+}
+void InitSectionPerms(SectionPerm *sp) {
 	unsigned long mask = 0;
+
+	if(!sp)
+		return;
+
+	sp->start = kallsyms_lookup_name("_stext");
+	sp->end = kallsyms_lookup_name("__init_begin");
+	if(sp->end == 0) {
+		sp->end = kallsyms_lookup_name("_etext");
+	}
 
 	if( !IS_ALIGNED(sp->start, SECTION_SIZE) || !IS_ALIGNED(sp->end, SECTION_SIZE) ) {
 		// Correction
@@ -85,20 +137,7 @@ void SetSectionPerms(SectionPerm *sp, pmdval_t prot) {
 
 		printk("[KCP] correction of addr : [%08x] ~ [%08x]\n", sp->start, sp->end);
 	}
-
-	for(addr = sp->start; addr < sp->end; addr += SECTION_SIZE) {
-		SectionUpdate(addr, sp->mask, prot);
-	}
-	printk("[KCP] SetSectionPerms end\n");
-}
-void GetSectionPerms(void) {
-}
-void InitSectionPerms(SectionPerm *sp) {
-	if(!sp)
-		return;
-
-	sp->start = kallsyms_lookup_name("_stext");
-	sp->end = kallsyms_lookup_name("__init_begin");
+	
 	sp->mask = ~(PMD_SECT_APX | PMD_SECT_AP_WRITE);
 	sp->prot = PMD_SECT_APX | PMD_SECT_AP_WRITE;
 	sp->clear = PMD_SECT_AP_WRITE;
@@ -133,6 +172,8 @@ asmlinkage int custom_sysinfo(struct sysinfo* info) {
 void HookSCT(void) {
 	syscall = (unsigned long*)kallsyms_lookup_name("sys_call_table");
 
+	printk("[KCP] syscall table : %08x\n", syscall);
+
 	real_sysinfo = (void*)*(syscall + __NR_sysinfo);
 	*(syscall + __NR_sysinfo) = (unsigned long)custom_sysinfo;
 
@@ -150,9 +191,12 @@ void RestoreSCT(void) {
 * [ToDo] disable preemption
 */
 int __PatchCode(void *data) {
-	//SetKernelTextRO(&roPerm);
+	GetSectionPerms(&roPerm);
+
+	SetKernelTextRW(&roPerm);
 	HookSCT();
 
+	GetSectionPerms(&roPerm);
 	return 0;
 }
 
@@ -166,10 +210,9 @@ void PatchCode(void) {
 
 int __init KernelCodePatchInit(void) {
 	InitSectionPerms(&roPerm);
-
-	PatchCode();
+	
 	PatchCodeUnderStopMachine();
-
+	
 	return 0;
 }
 
