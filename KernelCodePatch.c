@@ -68,6 +68,7 @@ void SectionUpdate(unsigned long addr, pmdval_t mask, pmdval_t prot) {
 
 	flush_pmd_entry(pmd);
 	flush_tlb_all();
+	flush_icache_range(addr, addr + SECTION_SIZE);
 	//local_flush_tlb_kernel_range(addr, addr + SECTION_SIZE);
 }
 
@@ -179,6 +180,8 @@ void HookSCT(void) {
 
 	printk("[KCP] Hook Success\n");
 	isHookSucceed = 1;
+
+	flush_icache_range(syscall + __NR_sysinfo, sizeof(unsigned long));
 }
 void RestoreSCT(void) {
 	if(isHookSucceed && syscall) {
