@@ -20,6 +20,7 @@
 #include <linux/sched.h>
 #include <linux/kallsyms.h>
 #include <linux/kernel.h>
+#include <linux/preempt.h>
 #include <asm/string.h>
 #include <linux/highmem.h>
 #include <linux/netfilter.h>
@@ -61,15 +62,16 @@ void SectionUpdate(unsigned long addr, pmdval_t mask, pmdval_t prot) {
 	mm = current->active_mm;
 	pmd = pmd_offset(pud_offset(pgd_offset(mm, addr), addr), addr);
 
-	if (addr & SECTION_SIZE)
+	if (addr & SECTION_SIZE) {
 		pmd[1] = __pmd((pmd_val(pmd[1]) & mask) | prot);
-	else
+	}
+	else {
 		pmd[0] = __pmd((pmd_val(pmd[0]) & mask) | prot);
+	}
 
 	flush_pmd_entry(pmd);
-	flush_tlb_all();
+	local_flush_tlb_kernel_range(addr, addr + SECTION_SIZE);
 	flush_icache_range(addr, addr + SECTION_SIZE);
-	//local_flush_tlb_kernel_range(addr, addr + SECTION_SIZE);
 }
 
 void SetSectionPerms(SectionPerm *sp, pmdval_t prot) {
@@ -99,16 +101,16 @@ void GetSectionPerms(SectionPerm *sp) {
 	}
 
 	mm = current->active_mm;
-	pmd = pmd_offset(pud_offset(pgd_offset(mm, addr), addr), addr);
-
 	for(addr = sp->start; addr < sp->end; addr += SECTION_SIZE) {
+		pmd = pmd_offset(pud_offset(pgd_offset(mm, addr), addr), addr);
+
 		if (addr & SECTION_SIZE)
 			pmdIdx = 1;
 		else
 			pmdIdx = 0;
 
 		pmdVal = pmd_val(pmd[pmdIdx]);
-		printk( "Addr : [%08x], PMD Val : [%08x], APX : [%d], AP(r) : [%d], AP(w) : [%d]\n", 
+		printk( "[KCP] Addr : [%08x], PMD Val : [%08x], APX : [%d], AP(r) : [%d], AP(w) : [%d]\n", 
 					addr, pmdVal, 
 					!!(pmdVal & PMD_SECT_APX), 
 					!!(pmdVal & PMD_SECT_AP_READ),
@@ -194,12 +196,14 @@ void RestoreSCT(void) {
 * [ToDo] disable preemption
 */
 int __PatchCode(void *data) {
+	preempt_disable();
 	GetSectionPerms(&roPerm);
 
 	SetKernelTextRW(&roPerm);
 	HookSCT();
 
 	GetSectionPerms(&roPerm);
+	preempt_enable();
 	return 0;
 }
 
@@ -210,19 +214,19 @@ void PatchCode(void) {
 	HookSCT();
 }
 
-
 int __init KernelCodePatchInit(void) {
 	InitSectionPerms(&roPerm);
-	
 	PatchCodeUnderStopMachine();
 	
 	return 0;
 }
 
 void __exit KernelCodePatchExit(void) {
+	RestoreSCT();
 	return;
 }
 
 module_init(KernelCodePatchInit);
 module_exit(KernelCodePatchExit);
 MODULE_LICENSE("GPL");
+
