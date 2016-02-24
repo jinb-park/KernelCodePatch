@@ -1,2 +1,4 @@
 .Kernel*
+.ARMBranch*
+.Section*
 .tmp_versions*

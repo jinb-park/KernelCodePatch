@@ -1,5 +1,6 @@
-obj-m := KernelCodePatch.o
+obj-m := KernelBranchPatch.o
 
+KernelBranchPatch-objs := SectionUpdate.o ARMBranchPatch.o
 
 default:
 	make -C $(KDIR) SUBDIRS=$(PWD) modules

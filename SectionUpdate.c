@@ -54,6 +54,7 @@ typedef struct _SectionPerm {
 }SectionPerm;
 
 SectionPerm roPerm;
+int roPermIntialized = 0;
 
 void SectionUpdate(unsigned long addr, pmdval_t mask, pmdval_t prot) {
 	struct mm_struct *mm;
@@ -145,6 +146,7 @@ void InitSectionPerms(SectionPerm *sp) {
 	sp->prot = PMD_SECT_APX | PMD_SECT_AP_WRITE;
 	sp->clear = PMD_SECT_AP_WRITE;
 
+	roPermIntialized = 1;
 	printk("[KCP] %08x, %08x\n", sp->start, sp->end);
 }
 
@@ -162,71 +164,30 @@ void SetKernelTextRW(SectionPerm *sp) {
 }
 
 /*
-* Test Patch Function (system call table patch)
-*/
-unsigned long *syscall = NULL;
-int isHookSucceed = 0;
-
-asmlinkage int (*real_sysinfo)(struct sysinfo* info);
-asmlinkage int custom_sysinfo(struct sysinfo* info) {
-	return real_sysinfo(info);
-}
-
-void HookSCT(void) {
-	syscall = (unsigned long*)kallsyms_lookup_name("sys_call_table");
-
-	printk("[KCP] syscall table : %08x\n", syscall);
-
-	real_sysinfo = (void*)*(syscall + __NR_sysinfo);
-	*(syscall + __NR_sysinfo) = (unsigned long)custom_sysinfo;
-
-	printk("[KCP] Hook Success\n");
-	isHookSucceed = 1;
-
-	flush_icache_range(syscall + __NR_sysinfo, sizeof(unsigned long));
-}
-void RestoreSCT(void) {
-	if(isHookSucceed && syscall) {
-		*(syscall + __NR_sysinfo) = (unsigned long)real_sysinfo;
-	}
-}
-
-/*
+* PatchCode
 * stop_machine environment
-* [ToDo] disable preemption
 */
 int __PatchCode(void *data) {
+	void (*patchFunc)(void) = data;
+
+	if(!patchFunc) {
+		return;
+	}
+	if(!roPermIntialized) {
+		InitSectionPerms(&roPerm);
+	}
+
 	preempt_disable();
 	GetSectionPerms(&roPerm);
 
 	SetKernelTextRW(&roPerm);
-	HookSCT();
+	patchFunc();
 
 	GetSectionPerms(&roPerm);
 	preempt_enable();
 	return 0;
 }
 
-void PatchCodeUnderStopMachine(void) {
-	stop_machine(__PatchCode, NULL, NULL);
+void PatchCode(void (*patchFunc)(void)) {
+	stop_machine(__PatchCode, (void*)patchFunc, NULL);
 }
-void PatchCode(void) {
-	HookSCT();
-}
-
-int __init KernelCodePatchInit(void) {
-	InitSectionPerms(&roPerm);
-	PatchCodeUnderStopMachine();
-	
-	return 0;
-}
-
-void __exit KernelCodePatchExit(void) {
-	RestoreSCT();
-	return;
-}
-
-module_init(KernelCodePatchInit);
-module_exit(KernelCodePatchExit);
-MODULE_LICENSE("GPL");
-
