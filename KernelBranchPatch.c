@@ -1,4 +1,5 @@
 #include <linux/module.h>
+#include <linux/namei.h>
 #include <linux/kallsyms.h>
 #include <linux/string.h>
 #include <asm/unistd.h>
@@ -37,6 +38,7 @@ unsigned long do_filp_open_addr;	// func
 unsigned long path_openat_addr;  // from
 								// to - hook_path_openat
 unsigned long do_filp_open_size = 80;
+struct file * (*orig_path_openat)(struct nameidata *nd, const struct open_flags *op, unsigned flags);
 
 
 /*
@@ -83,8 +85,8 @@ void SectionUpdate(unsigned long addr, pmdval_t mask, pmdval_t prot) {
 	}
 
 	flush_pmd_entry(pmd);
-	flush_tlb_all();
-	//local_flush_tlb_kernel_range(addr, addr + SECTION_SIZE);
+	//flush_tlb_all();
+	local_flush_tlb_kernel_range(addr, addr + SECTION_SIZE);
 	flush_icache_range(addr, addr + SECTION_SIZE);
 }
 
@@ -228,6 +230,7 @@ void ARM_BranchPatch(unsigned long *func, unsigned long size, unsigned long *fro
 			if(inst == fromInst) {
 				finalInst = ARM_GenBranch(pc, to, 1);
 
+				printk("[KCP] pc : [%08x]\n", pc);
 				printk("[KCP] dest : [%08x], orig-inst : [%08x], patched-inst : [%08x]\n", (unsigned long)to, inst, finalInst);
 
 				/* Patch */
@@ -261,13 +264,41 @@ void PatchCode(void (*patchFunc)(void)) {
 	stop_machine(__PatchCode, (void*)patchFunc, NULL);
 }
 
+unsigned int printCount = 0;
 
-void hook_path_openat(void) {
-	return;
+struct nameidata {
+	struct path	path;
+	struct qstr	last;
+	struct path	root;
+	struct inode	*inode; /* path.dentry.d_inode */
+	unsigned int	flags;
+	unsigned	seq, m_seq;
+	int		last_type;
+	unsigned	depth;
+	struct file	*base;
+	char *saved_names[MAX_NESTED_LINKS + 1];
+};
+
+struct file *hook_path_openat(struct nameidata *nd, const struct open_flags *op, unsigned flags) {
+	/*
+	if(printCount == 0) {
+		printk("[KCP] 0\n");
+	}
+	printCount++;
+	if(printCount % 50 == 0) {
+		printk("[KCP] %s\n", nd->last.name);
+	}
+	if(printCount >= 1000) {
+		printCount = 0;
+	}*/
+	return orig_path_openat(nd, op, flags);
 }
 
 void BranchPatchFunc(void) {
 	ARM_BranchPatch(do_filp_open_addr, do_filp_open_size, path_openat_addr, hook_path_openat);
+}
+void RestorePatchFunc(void) {
+	ARM_BranchPatch(do_filp_open_addr, do_filp_open_size, hook_path_openat, path_openat_addr);
 }
 
 int __init KernelBranchPatchInit(void) {
@@ -280,6 +311,7 @@ int __init KernelBranchPatchInit(void) {
 }
 
 void __exit KernelBranchPatchExit(void) {
+	PatchCode(RestorePatchFunc);
 	return;
 }
 
